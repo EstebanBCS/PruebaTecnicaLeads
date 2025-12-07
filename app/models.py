@@ -1,16 +1,19 @@
 from pydantic import BaseModel, EmailStr
 
-class CrearLead(BaseModel):
+class LeadCreate(BaseModel):
     name: str
     email: EmailStr
     phone: str
     restaurant_type: str
     city: str
-    lat: float | None = None
-    longitude: float | None = None
-    
-class RespuestaLead(CrearLead):
+
+class LeadResponse(LeadCreate):
     id: int
-    name: str
     lat: float | None = None
-    longitude: float | None = None
+    lon: float | None = None
+
+    class Config:
+        orm_mode = True
+
+class SearchQuery(BaseModel):
+    query: str

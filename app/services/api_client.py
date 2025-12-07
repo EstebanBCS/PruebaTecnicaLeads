@@ -13,7 +13,7 @@ async def fetch_city_info(city: str):
     }
     
     headers = {
-        "User-Agent": "FastAPI-Lead-App"  # recomendado por Nominatim
+        "User-Agent": "FastAPI-Lead-App" 
     }
 
     async with httpx.AsyncClient() as client:
@@ -22,12 +22,12 @@ async def fetch_city_info(city: str):
             response.raise_for_status()
             data = response.json()
         except Exception:
-            return {"lat": None, "longitude": None}
+            return {"lat": None, "lon": None}
 
     if not data:
-        return {"lat": None, "longitude": None}
+        return {"lat": None, "lon": None}
 
     return {
         "lat": float(data[0]["lat"]),
-        "longitude": float(data[0]["lon"])
+        "lon": float(data[0]["lon"])
     }
