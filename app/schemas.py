@@ -11,5 +11,5 @@ class LeadORM(Base):
     restaurant_type = Column(String, nullable=False)
     city = Column(String, nullable=False)
     lat = Column(Float, nullable=True)
-    longit = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
     

@@ -7,10 +7,10 @@ class CrearLead(BaseModel):
     restaurant_type: str
     city: str
     lat: float | None = None
-    long: float | None = None
+    longitude: float | None = None
     
 class RespuestaLead(CrearLead):
     id: int
     name: str
     lat: float | None = None
-    long: float | None = None
+    longitude: float | None = None
