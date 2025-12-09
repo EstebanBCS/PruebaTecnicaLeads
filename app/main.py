@@ -1,10 +1,13 @@
-from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from app.db import Base, engine, SessionLocal
 from app.schemas import Lead
 from app.models import LeadCreate, LeadResponse, SearchQuery
 from app.services.api_client import fetch_city_info
-from app.services.vector_service import find_most_similar_by_name  
+from app.services.vector_service import find_most_similar_by_name
+from fastapi import FastAPI, Depends, HTTPException, status  
+from typing import List
+from fastapi import Query
+
 
 Base.metadata.create_all(bind=engine)
 
@@ -17,13 +20,31 @@ def get_db():
     finally:
         db.close()
 
-@app.get("/")  # Ruta raíz
+#Raiz Unicamente para dar a conocer que se levanto correctamente
+@app.get("/")  
 def root():
     return {"message": "Servidor Funcionando Correctamente"}
 
-@app.post("/leads", response_model=LeadResponse)
+
+#Crear Lead
+@app.post("/api/leads", response_model=LeadResponse, status_code=status.HTTP_201_CREATED)
 async def create_lead(lead: LeadCreate, db: Session = Depends(get_db)):
-    external = await fetch_city_info(lead.city)
+    # Verificar duplicado
+    existing_email = db.query(Lead).filter(Lead.email == lead.email).first()
+    if existing_email:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ya existe un lead con ese email"
+        )
+
+    # Intentar obtener datos externos
+    try:
+        external = await fetch_city_info(lead.city)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El servicio externo de ubicación falló"
+        )
 
     new_lead = Lead(
         name=lead.name,
@@ -35,39 +56,67 @@ async def create_lead(lead: LeadCreate, db: Session = Depends(get_db)):
         lon=external.get("lon")
     )
 
-    db.add(new_lead)
-    db.commit()
-    db.refresh(new_lead)
+    try:
+        db.add(new_lead)
+        db.commit()
+        db.refresh(new_lead)
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al guardar el lead en la base de datos"
+        )
 
     return new_lead
 
-@app.get("/leads", response_model=list[LeadResponse])
+#Listar todos los Leads
+@app.get("/api/leads", response_model=list[LeadResponse])
 def list_leads(db: Session = Depends(get_db)):
-    return db.query(Lead).all()
+    try:
+        return db.query(Lead).all()
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No se pudieron obtener los leads"
+        )
 
-@app.post("/leads/search")
+#Buscar con query
+@app.post("/api/leads/search")
 def search_lead_similar(request: SearchQuery, db: Session = Depends(get_db)):
-    query = request.query 
-    
-    match, score = find_most_similar_by_name(query, db) 
+    results = find_most_similar_by_name(request.query, db, top_k=3)
 
-    if not match:
-        return {"match": None, "score": 0.0}
+    if not results:
+        raise HTTPException(status_code=404, detail="No se encontraron leads similares")
 
-    return {
-        "match": {
-            "id": match.id,
-            "name": match.name,
-            "email": match.email,
-            "phone": match.phone,
-            "restaurant_type": match.restaurant_type,
-            "city": match.city,
-            "lat": match.lat,
-            "lon": match.lon
-        },
-        "score": score
-    }
+    # Convertir la salida
+    response = []
+    for lead, score in results:
+        response.append({
+            "match": LeadResponse.from_orm(lead),
+            "score": round(score, 3)
+        })
 
-@app.get("/health")
+    return {"results": response}
+
+
+
+#Obtener Health
+@app.get("/api/health")
 def health_check():
     return {"status": "ok"}
+
+
+
+#Eliminar
+@app.delete("/api/leads/{lead_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_lead(lead_id: int, db: Session = Depends(get_db)):
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Lead no encontrado"
+        )
+
+    db.delete(lead)
+    db.commit()

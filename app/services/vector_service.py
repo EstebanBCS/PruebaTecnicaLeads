@@ -1,71 +1,92 @@
-from sqlalchemy.orm import Session
-from app.schemas import Lead
+import unicodedata
 import re
-import math
+from sqlalchemy.orm import Session
+from difflib import SequenceMatcher
+from app.schemas import Lead
 
-#   Generar vector (más real)
-def embed(text: str) -> list[float]:
-    """
-    Convierte texto a vector simple basado en:
-    - Longitud
-    - Número de palabras
-    """
-    length = len(text)
-    words = len(text.split())
-    return [float(length), float(words)]
+#Ejemplos de Abreviaciones
+CITY_ABBREVIATIONS = {
+    "mzt": "mazatlan",
+    "tj": "tijuana",
+    "cdmx": "ciudad de mexico",
+    "gdl": "guadalajara",
+    "mty": "monterrey",
+    "qro": "queretaro",
+}
+
+def normalize(text: str) -> str:
+    if not text:
+        return ""
+    text = text.lower()
+    text = ''.join(
+        c for c in unicodedata.normalize("NFD", text)
+        if unicodedata.category(c) != "Mn"
+    )
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    return text.strip()
+
+#Funcion Basica para las abreviaciones
+def expand_abbreviation(text: str) -> str:
+    t = normalize(text)
+    return CITY_ABBREVIATIONS.get(t, t)
 
 
-#  Similitud entre vectores
-def similarity(a: list[float], b: list[float]) -> float:
-    """
-    Similitud simple: comparación basada en longitud y número de palabras.
-    """
-    if a[0] == 0 or b[0] == 0:
+def str_similarity(a: str, b: str) -> float:
+    """Ratio de similitud entre dos strings (0-1)."""
+    if not a or not b:
         return 0.0
-    
-    # Normalizar diferencia
-    diff = abs(a[0] - b[0]) + abs(a[1] - b[1]) 
-    max_len = max(a[0], b[0]) + max(a[1], b[1])
+    return SequenceMatcher(None, a, b).ratio()
 
-    return 1 - (diff / max_len)
+def token_overlap_score(query_tokens: set, target_tokens: set) -> float:
+    if not query_tokens or not target_tokens:
+        return 0.0
+    inter = query_tokens & target_tokens
+    # Jaccard-like: |A∩B| / |A∪B|
+    union = query_tokens | target_tokens
+    return len(inter) / max(1, len(union))
 
-
-def clean(text: str) -> str:
-    return re.sub(r"[^a-zA-ZáéíóúñüÁÉÍÓÚÑÜ\s]", "", text.lower())
-
-def find_most_similar_by_name(query: str, db: Session):
-    """
-    Similitud por:
-    + Coincidencia en tipo de restaurante (palabras clave)
-    + Coincidencia de ciudad
-    + Similaridad de longitud del nombre (desempate)
-    """
-
-    query_clean = clean(query)
-
-    best_match = None
-    best_score = -1
+#Funcion para encontrar el mas similar por el Nombre en este caso se apoya de las abreviaciones que agregamos al inicio
+def find_most_similar_by_name(query: str, db: Session, top_k: int = 3):
+    q = expand_abbreviation(query)
+    if not q:
+        return [], []
 
     leads = db.query(Lead).all()
+    if not leads:
+        return [], []
+
+    scored = []
 
     for lead in leads:
-        txt = clean(f"{lead.name} {lead.restaurant_type} {lead.city}")
-        
+        full = f"{lead.name} {lead.restaurant_type} {lead.city}"
+        t = normalize(full)
+
         score = 0
+
+        # 1) Coincidencia restaurante
+        if normalize(lead.restaurant_type) in q:
+            score += 2
         
-        # 1) Coincidencia por tipo (palabra dentro)
-        if lead.restaurant_type.lower() in query_clean:
-            score += 2  # Mayor peso
+        # 2) Coincidencia ciudad o abreviación
+        city_norm = normalize(lead.city)
+        if city_norm in q or q in city_norm:
+            score += 1
 
-        # 2) Coincidencia ciudad
-        if lead.city.lower() in query_clean:
-            score += 1  
 
-        # 3) Desempate por longitud
-        score += 1 - abs(len(query_clean) - len(txt)) / max(len(query_clean), len(txt))
+        # 3) Similitud proporcional por letras en común
+        name = normalize(lead.name)
+        common = len(set(q) & set(name))
+        score += common / max(len(q), len(name))
 
-        if score > best_score:
-            best_score = score
-            best_match = lead
+        # 4) Bonus iniciales (ej. mzt con mazatlan)
+        if q[:2] == name[:2]:
+            score += 0.5
 
-    return best_match, best_score
+        scored.append((lead, score))
+
+    # Ordenar por score
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    # Tomar solo TOP-K
+    return scored[:top_k]
+

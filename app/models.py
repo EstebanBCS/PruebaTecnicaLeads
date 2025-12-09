@@ -14,6 +14,7 @@ class LeadResponse(LeadCreate):
 
     class Config:
         orm_mode = True
-
+        from_attributes = True
+        
 class SearchQuery(BaseModel):
     query: str
